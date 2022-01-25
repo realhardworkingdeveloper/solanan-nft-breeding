@@ -1,0 +1,24 @@
+{
+  "name": "solana-nfts",
+  "version": "0.1.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "compile": "tsc",
+    "start": "npm run compile && node dist/index.js",
+    "dev": "nodemon -e ts --exec \"npm run start\"",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@metaplex/js": "^4.11.7",
+    "@solana/spl-token": "^0.1.8",
+    "@solana/web3.js": "^1.24.1",
+    "arweave": "^1.10.23"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.12",
+    "typescript": "^4.4.2"
+  }
+}
