@@ -1,0 +1,17 @@
+[
+    {
+        "id": 1,
+        "name": "sample1",
+        "src": "assets/1.jpg"
+    },
+    {
+        "id": 2,
+        "name": "sample2",
+        "src": "assets/2.jpg"
+    },
+    {
+        "id": 3,
+        "name": "sample3",
+        "src": "assets/3.jpg"
+    }
+]
