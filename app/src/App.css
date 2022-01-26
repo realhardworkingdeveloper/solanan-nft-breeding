@@ -36,3 +36,16 @@
     transform: rotate(360deg);
   }
 }
+
+.breeded-img {
+  min-height: 300px;
+  min-width: 300px;
+}
+
+.breeded-img:hover {
+  cursor: pointer;
+}
+
+.cusor-pointer:hover {
+  cursor: pointer;
+}

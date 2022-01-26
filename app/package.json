@@ -12,6 +12,7 @@
     "@testing-library/jest-dom": "^5.16.1",
     "@testing-library/react": "^12.1.2",
     "@testing-library/user-event": "^13.5.0",
+    "antd": "^4.18.5",
     "assert": "^2.0.0",
     "bootstrap": "^5.1.3",
     "react": "^17.0.2",
