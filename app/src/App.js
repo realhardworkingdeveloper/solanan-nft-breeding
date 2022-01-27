@@ -21,6 +21,7 @@ import {
   WalletModalProvider,
   WalletMultiButton,
 } from "@solana/wallet-adapter-react-ui";
+import Timer from "./components/timer";
 require("@solana/wallet-adapter-react-ui/styles.css");
 
 const wallets = [
@@ -37,6 +38,10 @@ const opts = {
 const programID = new PublicKey(idl.metadata.address);
 
 const App = () => {
+  const [isBreeding, setIsBreeding] = useState(true);
+  const [timeRemaining, setTimeRemaining] = useState(300);
+  const [balance, setBalance] = useState();
+
   const [breededAt, setBreededAt] = useState(null);
   const [firstNft, setFirstNft] = useState("");
   const [secNft, setSecNft] = useState("");
@@ -71,6 +76,7 @@ const App = () => {
         baseAccount.publicKey
       );
       console.log("account: ", account);
+      setTimeRemaining(account.timeRemaining);
       setBreededAt(account.breededAt);
       setFirstNft(account.dataList.firtNft);
       setSecNft(account.dataList.secNft);
@@ -131,6 +137,7 @@ const App = () => {
 
   return (
     <div className="App">
+      {isBreeding && (<Timer timeRemaining={timeRemaining} />)}
       <div
         style={{
           display: "flex",
