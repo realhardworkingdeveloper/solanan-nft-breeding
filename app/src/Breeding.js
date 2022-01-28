@@ -9,8 +9,8 @@ import nftLists from "./assets/nft-list.json";
 import NftListsModal from "./components/nft-lists-modal";
 
 import {
-  PhantomWalletAdapter,
-  SolflareWalletAdapter,
+  getPhantomWallet,
+  getSlopeWallet,
 } from "@solana/wallet-adapter-wallets";
 import {
   useWallet,
@@ -25,8 +25,8 @@ import Timer from "./components/timer";
 require("@solana/wallet-adapter-react-ui/styles.css");
 
 const wallets = [
-  new PhantomWalletAdapter(),
-  // new SolflareWalletAdapter()
+  getPhantomWallet(),
+  // getSlopeWallet(),
 ];
 
 const { SystemProgram, Keypair } = web3;
@@ -37,7 +37,7 @@ const opts = {
 };
 const programID = new PublicKey(idl.metadata.address);
 
-const App = () => {
+const Breeding = () => {
   const [isBreeding, setIsBreeding] = useState(true);
   const [timeRemaining, setTimeRemaining] = useState(300);
   const [balance, setBalance] = useState();
@@ -58,7 +58,7 @@ const App = () => {
   async function getProvider() {
     /* create the provider and return it to the caller */
     /* network set to local network for now */
-    const network = "http://127.0.0.1:8899";
+    const network = web3.clusterApiUrl("devnet");
     const connection = new Connection(network, opts.preflightCommitment);
 
     const provider = new Provider(connection, wallet, opts.preflightCommitment);
@@ -90,6 +90,7 @@ const App = () => {
     const provider = await getProvider();
     /* create the program interface combining the idl, program ID, and provider */
     const program = new Program(idl, programID, provider);
+    console.log("================", provider.wallet.publicKey.toString())
     try {
       /* interact with the program via rpc */
       await program.rpc.breeding(nftWillBreed, {
@@ -117,7 +118,7 @@ const App = () => {
     if (firstNft && secNft) {
       await breeding();
     } else {
-      alert("Select two images!");
+      alert("Select two NFTs!");
     }
   };
 
@@ -142,7 +143,6 @@ const App = () => {
         style={{
           display: "flex",
           justifyContent: "center",
-          marginTop: "30px",
         }}
       >
         <WalletMultiButton />
@@ -174,7 +174,7 @@ const App = () => {
             </div>
           </Col>
         </Row>
-        <Row className="mt-2 justify-content-center">
+        <Row className="mt-2 mb-5 justify-content-center">
           <Col md="3">
             <Button onClick={handleBreeding}>Start Breeding</Button>
           </Col>
@@ -192,14 +192,14 @@ const App = () => {
 };
 
 /* wallet configuration as specified here: https://github.com/solana-labs/wallet-adapter#setup */
-const AppWithProvider = () => (
-  <ConnectionProvider endpoint="http://127.0.0.1:8899">
+const BreedingWithProvider = () => (
+  <ConnectionProvider endpoint={web3.clusterApiUrl("devnet")}>
     <WalletProvider wallets={wallets} autoConnect>
       <WalletModalProvider>
-        <App />
+        <Breeding />
       </WalletModalProvider>
     </WalletProvider>
   </ConnectionProvider>
 );
 
-export default AppWithProvider;
+export default BreedingWithProvider;
