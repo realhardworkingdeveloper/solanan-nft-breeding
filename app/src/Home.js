@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, Fragment } from 'react';
 import * as anchor from '@project-serum/anchor';
 
 import styled from 'styled-components';
@@ -19,7 +19,7 @@ import { AlertState } from './utils';
 import { Header } from './Header';
 import { MintButton } from './MintButton';
 import { GatewayProvider } from '@civic/solana-gateway-react';
-import Breeding from './Breeding.js';
+import BreedingGroup from './breeding';
 
 const ConnectButton = styled(WalletDialogButton)`
   width: 100%;
@@ -34,22 +34,15 @@ const ConnectButton = styled(WalletDialogButton)`
 
 const MintContainer = styled.div``; // add your owns styles here
 
-export interface HomeProps {
-  candyMachineId?: anchor.web3.PublicKey;
-  connection: anchor.web3.Connection;
-  startDate: number;
-  txTimeout: number;
-  rpcHost: string;
-}
-
-const Home = (props: HomeProps) => {
+const Home = (props) => {
   const [isUserMinting, setIsUserMinting] = useState(false);
-  const [candyMachine, setCandyMachine] = useState<CandyMachineAccount>();
-  const [alertState, setAlertState] = useState<AlertState>({
+  const [candyMachine, setCandyMachine] = useState();
+  const [alertState, setAlertState] = useState({
     open: false,
     message: '',
     severity: undefined,
   });
+  const [isExpired, setIsExpired] = useState(false);
 
   const rpcUrl = props.rpcHost;
   const wallet = useWallet();
@@ -68,7 +61,7 @@ const Home = (props: HomeProps) => {
       publicKey: wallet.publicKey,
       signAllTransactions: wallet.signAllTransactions,
       signTransaction: wallet.signTransaction,
-    } as anchor.Wallet;
+    };
   }, [wallet]);
 
   const refreshCandyMachineState = useCallback(async () => {
@@ -100,7 +93,7 @@ const Home = (props: HomeProps) => {
           await mintOneToken(candyMachine, wallet.publicKey)
         )[0];
 
-        let status: any = { err: true };
+        let status = { err: true };
         if (mintTxId) {
           status = await awaitTransactionSignatureConfirmation(
             mintTxId,
@@ -119,13 +112,13 @@ const Home = (props: HomeProps) => {
         } else {
           setAlertState({
             open: true,
-            message: 'Mint failed! Please try again!',
+            message: 'Failed! Please try again!',
             severity: 'error',
           });
         }
       }
-    } catch (error: any) {
-      let message = error.msg || 'Minting failed! Please try again!';
+    } catch (error) {
+      let message = error.msg || 'Failed! Please try again!';
       if (!error.msg) {
         if (!error.message) {
           message = 'Transaction Timeout! Please try again.';
@@ -139,7 +132,7 @@ const Home = (props: HomeProps) => {
           message = `SOLD OUT!`;
           window.location.reload();
         } else if (error.code === 312) {
-          message = `Minting period hasn't started yet.`;
+          message = `Period hasn't started yet.`;
         }
       }
 
@@ -163,56 +156,19 @@ const Home = (props: HomeProps) => {
   ]);
 
   return (
-    <Container style={{ marginTop: 10 }}>
-      <Breeding />
-      
-      {/* <Container maxWidth="xs" style={{ position: 'relative' }}>
-        <Paper
-          style={{ padding: 24, backgroundColor: '#151A1F', borderRadius: 6 }}
-        >
-          {!wallet.connected ? (
-            <ConnectButton>Connect Wallet</ConnectButton>
-          ) : (
-            <>
-              <Header candyMachine={candyMachine} />
-              <MintContainer>
-                {candyMachine?.state.isActive &&
-                  candyMachine?.state.gatekeeper &&
-                  wallet.publicKey &&
-                  wallet.signTransaction ? (
-                  <GatewayProvider
-                    wallet={{
-                      publicKey:
-                        wallet.publicKey ||
-                        new PublicKey(CANDY_MACHINE_PROGRAM),
-                      //@ts-ignore
-                      signTransaction: wallet.signTransaction,
-                    }}
-                    gatekeeperNetwork={
-                      candyMachine?.state?.gatekeeper?.gatekeeperNetwork
-                    }
-                    clusterUrl={rpcUrl}
-                    options={{ autoShowModal: false }}
-                  >
-                    <MintButton
-                      candyMachine={candyMachine}
-                      isMinting={isUserMinting}
-                      onMint={onMint}
-                    />
-                  </GatewayProvider>
-                ) : (
-                  <MintButton
-                    candyMachine={candyMachine}
-                    isMinting={isUserMinting}
-                    onMint={onMint}
-                  />
-                )}
-              </MintContainer>
-            </>
-          )}
-        </Paper>
-      </Container> */}
-
+    <Fragment>
+      {isExpired && (
+        <Container maxWidth="xs" style={{ position: 'relative' }}>
+          <MintContainer>
+            <MintButton
+              candyMachine={candyMachine}
+              isMinting={isUserMinting}
+              onMint={onMint}
+            />
+          </MintContainer>
+        </Container>
+      )}
+      <BreedingGroup setIsExpired={setIsExpired} />
       <Snackbar
         open={alertState.open}
         autoHideDuration={6000}
@@ -225,7 +181,7 @@ const Home = (props: HomeProps) => {
           {alertState.message}
         </Alert>
       </Snackbar>
-    </Container>
+    </Fragment>
   );
 };
 

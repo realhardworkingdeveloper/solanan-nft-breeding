@@ -36,20 +36,13 @@ export const MintButton = ({
   }, [gatewayStatus, clicked, setClicked, onMint]);
 
   const getMintButtonContent = () => {
-    if (candyMachine?.state.isSoldOut) {
-      return 'SOLD OUT';
-    } else if (isMinting) {
-      return <CircularProgress />;
-    } else if (candyMachine?.state.isPresale) {
-      return 'PRESALE MINT';
-    }
-
-    return 'MINT';
+    return 'GET A NEW NFT';
   };
 
   return (
     <CTAButton
       disabled={
+        clicked ||
         candyMachine?.state.isSoldOut ||
         isMinting ||
         !candyMachine?.state.isActive
