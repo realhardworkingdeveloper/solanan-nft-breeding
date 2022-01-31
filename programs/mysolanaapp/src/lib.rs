@@ -27,7 +27,7 @@ use {
     spl_token::state::Mint,
     std::{cell::RefMut, ops::Deref, str::FromStr},
 };
-anchor_lang::declare_id!("2b9Q4a8DSNfypePwm1FvE9AgLWJDbHZbVSuV6DqGooaS");
+anchor_lang::declare_id!("cndy3Z4yapfJBmL3ShUp5exZKqR3z33thTzeNMm2gRZ");
 
 const EXPIRE_OFFSET: i64 = 10 * 60;
 const PREFIX: &str = "breeding_machine";
@@ -414,4 +414,675 @@ pub mod nft_breeding_machine_v2 {
         sol_log_compute_units();
         Ok(())
     }
+
+    pub fn update_breeding_machine(
+        ctx: Context<UpdateBreedingMachine>,
+        data: BreedingMachineData,
+    ) -> ProgramResult {
+        let breeding_machine = &mut ctx.accounts.breeding_machine;
+
+        if data.items_available != breeding_machine.data.items_available
+            && data.hidden_settings.is_none()
+        {
+            return Err(ErrorCode::CannotChangeNumberOfLines.into());
+        }
+
+        if breeding_machine.data.items_available > 0
+            && breeding_machine.data.hidden_settings.is_none()
+            && data.hidden_settings.is_some()
+        {
+            return Err(ErrorCode::CannotSwitchToHiddenSettings.into());
+        }
+
+        breeding_machine.wallet = ctx.accounts.wallet.key();
+        breeding_machine.data = data;
+
+        if ctx.remaining_accounts.len() > 0 {
+            breeding_machine.token_mint = Some(ctx.remaining_accounts[0].key())
+        } else {
+            breeding_machine.token_mint = None;
+        }
+        Ok(())
+    }
+
+    pub fn add_config_lines(
+        ctx: Context<AddConfigLines>,
+        index: u32,
+        config_lines: Vec<ConfigLine>,
+    ) -> ProgramResult {
+        let breeding_machine = &mut ctx.accounts.breeding_machine;
+        let account = breeding_machine.to_account_info();
+        let current_count = get_config_count(&account.data.borrow_mut())?;
+        let mut data = account.data.borrow_mut();
+
+        let mut fixed_config_lines = vec![];
+
+        // No risk overflow because you literally cant store this many in an account
+        // going beyond u32 only happens with the hidden store candies, which dont use this.
+        if index > (breeding_machine.data.items_available as u32) - 1 {
+            return Err(ErrorCode::IndexGreaterThanLength.into());
+        }
+
+        if breeding_machine.data.hidden_settings.is_some() {
+            return Err(ErrorCode::HiddenSettingsConfigsDoNotHaveConfigLines.into());
+        }
+
+        for line in &config_lines {
+            let mut array_of_zeroes = vec![];
+            while array_of_zeroes.len() < MAX_NAME_LENGTH - line.name.len() {
+                array_of_zeroes.push(0u8);
+            }
+            let name = line.name.clone() + std::str::from_utf8(&array_of_zeroes).unwrap();
+
+            let mut array_of_zeroes = vec![];
+            while array_of_zeroes.len() < MAX_URI_LENGTH - line.uri.len() {
+                array_of_zeroes.push(0u8);
+            }
+            let uri = line.uri.clone() + std::str::from_utf8(&array_of_zeroes).unwrap();
+            fixed_config_lines.push(ConfigLine { name, uri })
+        }
+
+        let as_vec = fixed_config_lines.try_to_vec()?;
+        // remove unneeded u32 because we're just gonna edit the u32 at the front
+        let serialized: &[u8] = &as_vec.as_slice()[4..];
+
+        let position = CONFIG_ARRAY_START + 4 + (index as usize) * CONFIG_LINE_SIZE;
+
+        let array_slice: &mut [u8] =
+            &mut data[position..position + fixed_config_lines.len() * CONFIG_LINE_SIZE];
+
+        array_slice.copy_from_slice(serialized);
+
+        let bit_mask_vec_start = CONFIG_ARRAY_START
+            + 4
+            + (breeding_machine.data.items_available as usize) * CONFIG_LINE_SIZE
+            + 4;
+
+        let mut new_count = current_count;
+        for i in 0..fixed_config_lines.len() {
+            let position = (index as usize)
+                .checked_add(i)
+                .ok_or(ErrorCode::NumericalOverflowError)?;
+            let my_position_in_vec = bit_mask_vec_start
+                + position
+                    .checked_div(8)
+                    .ok_or(ErrorCode::NumericalOverflowError)?;
+            let position_from_right = 7 - position
+                .checked_rem(8)
+                .ok_or(ErrorCode::NumericalOverflowError)?;
+            let mask = u8::pow(2, position_from_right as u32);
+
+            let old_value_in_vec = data[my_position_in_vec];
+            data[my_position_in_vec] = data[my_position_in_vec] | mask;
+            msg!(
+                "My position in vec is {} my mask is going to be {}, the old value is {}",
+                position,
+                mask,
+                old_value_in_vec
+            );
+            msg!(
+                "My new value is {} and my position from right is {}",
+                data[my_position_in_vec],
+                position_from_right
+            );
+            if old_value_in_vec != data[my_position_in_vec] {
+                msg!("Increasing count");
+                new_count = new_count
+                    .checked_add(1)
+                    .ok_or(ErrorCode::NumericalOverflowError)?;
+            }
+        }
+
+        // plug in new count.
+        data[CONFIG_ARRAY_START..CONFIG_ARRAY_START + 4]
+            .copy_from_slice(&(new_count as u32).to_le_bytes());
+
+        Ok(())
+    }
+
+    pub fn initialize_breeding_machine(
+        ctx: Context<InitializeBreedingMachine>,
+        data: BreedingMachineData,
+    ) -> ProgramResult {
+        let breeding_machine_account = &mut ctx.accounts.breeding_machine;
+
+        if data.uuid.len() != 6 {
+            return Err(ErrorCode::UuidMustBeExactly6Length.into());
+        }
+
+        let mut breeding_machine = BreedingMachine {
+            data,
+            authority: *ctx.accounts.authority.key,
+            wallet: *ctx.accounts.wallet.key,
+            token_mint: None,
+            items_redeemed: 0,
+        };
+
+        if ctx.remaining_accounts.len() > 0 {
+            let token_mint_info = &ctx.remaining_accounts[0];
+            let _token_mint: Mint = assert_initialized(&token_mint_info)?;
+            let token_account: spl_token::state::Account =
+                assert_initialized(&ctx.accounts.wallet)?;
+
+            assert_owned_by(&token_mint_info, &spl_token::id())?;
+            assert_owned_by(&ctx.accounts.wallet, &spl_token::id())?;
+
+            if token_account.mint != *token_mint_info.key {
+                return Err(ErrorCode::MintMismatch.into());
+            }
+
+            breeding_machine.token_mint = Some(*token_mint_info.key);
+        }
+
+        let mut array_of_zeroes = vec![];
+        while array_of_zeroes.len() < MAX_SYMBOL_LENGTH - breeding_machine.data.symbol.len() {
+            array_of_zeroes.push(0u8);
+        }
+        let new_symbol =
+            breeding_machine.data.symbol.clone() + std::str::from_utf8(&array_of_zeroes).unwrap();
+        breeding_machine.data.symbol = new_symbol;
+
+        // - 1 because we are going to be a creator
+        if breeding_machine.data.creators.len() > MAX_CREATOR_LIMIT - 1 {
+            return Err(ErrorCode::TooManyCreators.into());
+        }
+
+        let mut new_data = BreedingMachine::discriminator().try_to_vec().unwrap();
+        new_data.append(&mut breeding_machine.try_to_vec().unwrap());
+        let mut data = breeding_machine_account.data.borrow_mut();
+        // god forgive me couldnt think of better way to deal with this
+        for i in 0..new_data.len() {
+            data[i] = new_data[i];
+        }
+
+        let vec_start = CONFIG_ARRAY_START
+            + 4
+            + (breeding_machine.data.items_available as usize) * CONFIG_LINE_SIZE;
+        let as_bytes = (breeding_machine
+            .data
+            .items_available
+            .checked_div(8)
+            .ok_or(ErrorCode::NumericalOverflowError)? as u32)
+            .to_le_bytes();
+        for i in 0..4 {
+            data[vec_start + i] = as_bytes[i]
+        }
+
+        Ok(())
+    }
+
+    pub fn update_authority(
+        ctx: Context<UpdateBreedingMachine>,
+        new_authority: Option<Pubkey>,
+    ) -> ProgramResult {
+        let breeding_machine = &mut ctx.accounts.breeding_machine;
+
+        if let Some(new_auth) = new_authority {
+            breeding_machine.authority = new_auth;
+        }
+
+        Ok(())
+    }
+
+    pub fn withdraw_funds<'info>(ctx: Context<WithdrawFunds<'info>>) -> ProgramResult {
+        let authority = &ctx.accounts.authority;
+        let pay = &ctx.accounts.breeding_machine.to_account_info();
+        let snapshot: u64 = pay.lamports();
+
+        **pay.lamports.borrow_mut() = 0;
+
+        **authority.lamports.borrow_mut() = authority
+            .lamports()
+            .checked_add(snapshot)
+            .ok_or(ErrorCode::NumericalOverflowError)?;
+
+        Ok(())
+    }
+}
+
+fn get_space_for_breeding(data: BreedingMachineData) -> core::result::Result<usize, ProgramError> {
+    let num = if data.hidden_settings.is_some() {
+        CONFIG_ARRAY_START
+    } else {
+        CONFIG_ARRAY_START
+            + 4
+            + (data.items_available as usize) * CONFIG_LINE_SIZE
+            + 8
+            + 2 * ((data
+                .items_available
+                .checked_div(8)
+                .ok_or(ErrorCode::NumericalOverflowError)?
+                + 1) as usize)
+    };
+
+    Ok(num)
+}
+
+/// Create a new breeding machine.
+#[derive(Accounts)]
+#[instruction(data: BreedingMachineData)]
+pub struct InitializeBreedingMachine<'info> {
+    #[account(zero, rent_exempt = skip, constraint = breeding_machine.to_account_info().owner == program_id && breeding_machine.to_account_info().data_len() >= get_space_for_breeding(data)?)]
+    breeding_machine: UncheckedAccount<'info>,
+    wallet: UncheckedAccount<'info>,
+    authority: UncheckedAccount<'info>,
+    payer: Signer<'info>,
+    system_program: Program<'info, System>,
+    rent: Sysvar<'info, Rent>,
+}
+
+/// Add multiple config lines to the breeding machine.
+#[derive(Accounts)]
+pub struct AddConfigLines<'info> {
+    #[account(mut, has_one = authority)]
+    breeding_machine: Account<'info, BreedingMachine>,
+    authority: Signer<'info>,
+}
+
+/// Withdraw SOL from breeding machine account.
+#[derive(Accounts)]
+pub struct WithdrawFunds<'info> {
+    #[account(mut, has_one = authority)]
+    breeding_machine: Account<'info, BreedingMachine>,
+    #[account(address = breeding_machine.authority)]
+    authority: Signer<'info>,
+}
+
+/// Mint a new NFT pseudo-randomly from the config array.
+#[derive(Accounts)]
+#[instruction(creator_bump: u8)]
+pub struct MintNFT<'info> {
+    #[account(
+        mut,
+        has_one = wallet
+    )]
+    breeding_machine: Account<'info, BreedingMachine>,
+    #[account(seeds=[PREFIX.as_bytes(), breeding_machine.key().as_ref()], bump=creator_bump)]
+    breeding_machine_creator: UncheckedAccount<'info>,
+    payer: Signer<'info>,
+    #[account(mut)]
+    wallet: UncheckedAccount<'info>,
+    // With the following accounts we aren't using anchor macros because they are CPI'd
+    // through to token-metadata which will do all the validations we need on them.
+    #[account(mut)]
+    metadata: UncheckedAccount<'info>,
+    #[account(mut)]
+    mint: UncheckedAccount<'info>,
+    mint_authority: Signer<'info>,
+    update_authority: Signer<'info>,
+    #[account(mut)]
+    master_edition: UncheckedAccount<'info>,
+    #[account(address = mpl_token_metadata::id())]
+    token_metadata_program: UncheckedAccount<'info>,
+    token_program: Program<'info, Token>,
+    system_program: Program<'info, System>,
+    rent: Sysvar<'info, Rent>,
+    clock: Sysvar<'info, Clock>,
+    #[account(address = sysvar::recent_blockhashes::id())]
+    recent_blockhashes: UncheckedAccount<'info>,
+    #[account(address = sysvar::instructions::id())]
+    instruction_sysvar_account: UncheckedAccount<'info>,
+    // > Only needed if breeding machine has a gatekeeper
+    // gateway_token
+    // > Only needed if breeding machine has a gatekeeper and it has expire_on_use set to true:
+    // gateway program
+    // network_expire_feature
+    // > Only needed if breeding machine has whitelist_mint_settings
+    // whitelist_token_account
+    // > Only needed if breeding machine has whitelist_mint_settings and mode is BurnEveryTime
+    // whitelist_token_mint
+    // whitelist_burn_authority
+    // > Only needed if breeding machine has token mint
+    // token_account_info
+    // transfer_authority_info
+}
+
+/// Update the breeding machine state.
+#[derive(Accounts)]
+pub struct UpdateBreedingMachine<'info> {
+    #[account(
+        mut,
+        has_one = authority
+    )]
+    breeding_machine: Account<'info, BreedingMachine>,
+    authority: Signer<'info>,
+    wallet: UncheckedAccount<'info>,
+}
+
+/// Breeding machine state and config data.
+#[account]
+#[derive(Default)]
+pub struct BreedingMachine {
+    pub authority: Pubkey,
+    pub wallet: Pubkey,
+    pub token_mint: Option<Pubkey>,
+    pub items_redeemed: u64,
+    pub data: BreedingMachineData,
+    // there's a borsh vec u32 denoting how many actual lines of data there are currently (eventually equals items available)
+    // There is actually lines and lines of data after this but we explicitly never want them deserialized.
+    // here there is a borsh vec u32 indicating number of bytes in bitmask array.
+    // here there is a number of bytes equal to ceil(max_number_of_lines/8) and it is a bit mask used to figure out when to increment borsh vec u32
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct WhitelistMintSettings {
+    pub mode: WhitelistMintMode,
+    pub mint: Pubkey,
+    pub presale: bool,
+    pub discount_price: Option<u64>,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq)]
+pub enum WhitelistMintMode {
+    // Only captcha uses the bytes, the others just need to have same length
+    // for front end borsh to not crap itself
+    // Holds the validation window
+    BurnEveryTime,
+    NeverBurn,
+}
+
+/// Breeding machine settings data.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+pub struct BreedingMachineData {
+    pub uuid: String,
+    pub price: u64,
+    /// The symbol for the asset
+    pub symbol: String,
+    /// Royalty basis points that goes to creators in secondary sales (0-10000)
+    pub seller_fee_basis_points: u16,
+    pub max_supply: u64,
+    pub is_mutable: bool,
+    pub retain_authority: bool,
+    pub go_live_date: Option<i64>,
+    pub end_settings: Option<EndSettings>,
+    pub creators: Vec<Creator>,
+    pub hidden_settings: Option<HiddenSettings>,
+    pub whitelist_mint_settings: Option<WhitelistMintSettings>,
+    pub items_available: u64,
+    /// If [`Some`] requires gateway tokens on mint
+    pub gatekeeper: Option<GatekeeperConfig>,
+}
+
+/// Configurations options for the gatekeeper.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct GatekeeperConfig {
+    /// The network for the gateway token required
+    pub gatekeeper_network: Pubkey,
+    /// Whether or not the token should expire after minting.
+    /// The gatekeeper network must support this if true.
+    pub expire_on_use: bool,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub enum EndSettingType {
+    Date,
+    Amount,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct EndSettings {
+    pub end_setting_type: EndSettingType,
+    pub number: u64,
+}
+
+pub const CONFIG_ARRAY_START: usize = 8 + // key
+32 + // authority
+32 + //wallet
+33 + // token mint
+4 + 6 + // uuid
+8 + // price
+8 + // items available
+9 + // go live
+10 + // end settings
+4 + MAX_SYMBOL_LENGTH + // u32 len + symbol
+2 + // seller fee basis points
+4 + MAX_CREATOR_LIMIT*MAX_CREATOR_LEN + // optional + u32 len + actual vec
+8 + //max supply
+1 + // is mutable
+1 + // retain authority
+1 + // option for hidden setting
+4 + MAX_NAME_LENGTH + // name length,
+4 + MAX_URI_LENGTH + // uri length,
+32 + // hash
+4 +  // max number of lines;
+8 + // items redeemed
+1 + // whitelist option
+1 + // whitelist mint mode
+1 + // allow presale
+9 + // discount price
+32 + // mint key for whitelist
+1 + 32 + 1 // gatekeeper
+;
+
+/// Hidden Settings for large mints used with offline data.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+pub struct HiddenSettings {
+    pub name: String,
+    pub uri: String,
+    pub hash: [u8; 32],
+}
+
+pub fn get_config_count(data: &RefMut<&mut [u8]>) -> core::result::Result<usize, ProgramError> {
+    return Ok(u32::from_le_bytes(*array_ref![data, CONFIG_ARRAY_START, 4]) as usize);
+}
+
+pub fn get_good_index(
+    arr: &mut RefMut<&mut [u8]>,
+    items_available: usize,
+    index: usize,
+    pos: bool,
+) -> core::result::Result<(usize, bool), ProgramError> {
+    let mut index_to_use = index;
+    let mut taken = 1;
+    let mut found = false;
+    let bit_mask_vec_start = CONFIG_ARRAY_START
+        + 4
+        + (items_available) * CONFIG_LINE_SIZE
+        + 4
+        + items_available
+            .checked_div(8)
+            .ok_or(ErrorCode::NumericalOverflowError)?
+        + 4;
+
+    while taken > 0 && index_to_use < items_available {
+        let my_position_in_vec = bit_mask_vec_start
+            + index_to_use
+                .checked_div(8)
+                .ok_or(ErrorCode::NumericalOverflowError)?;
+        /*msg!(
+            "My position is {} and value there is {}",
+            my_position_in_vec,
+            arr[my_position_in_vec]
+        );*/
+        if arr[my_position_in_vec] == 255 {
+            //msg!("We are screwed here, move on");
+            let eight_remainder = 8 - index_to_use
+                .checked_rem(8)
+                .ok_or(ErrorCode::NumericalOverflowError)?;
+            let reversed = 8 - eight_remainder + 1;
+            if (eight_remainder != 0 && pos) || (reversed != 0 && !pos) {
+                //msg!("Moving by {}", eight_remainder);
+                if pos {
+                    index_to_use += eight_remainder;
+                } else {
+                    if index_to_use < 8 {
+                        break;
+                    }
+                    index_to_use -= reversed;
+                }
+            } else {
+                //msg!("Moving by 8");
+                if pos {
+                    index_to_use += 8;
+                } else {
+                    index_to_use -= 8;
+                }
+            }
+        } else {
+            let position_from_right = 7 - index_to_use
+                .checked_rem(8)
+                .ok_or(ErrorCode::NumericalOverflowError)?;
+            let mask = u8::pow(2, position_from_right as u32);
+
+            taken = mask & arr[my_position_in_vec];
+            if taken > 0 {
+                //msg!("Index to use {} is taken", index_to_use);
+                if pos {
+                    index_to_use += 1;
+                } else {
+                    if index_to_use == 0 {
+                        break;
+                    }
+                    index_to_use -= 1;
+                }
+            } else if taken == 0 {
+                //msg!("Index to use {} is not taken, exiting", index_to_use);
+                found = true;
+                arr[my_position_in_vec] = arr[my_position_in_vec] | mask;
+            }
+        }
+    }
+
+    Ok((index_to_use, found))
+}
+
+pub fn get_config_line<'info>(
+    a: &Account<'info, BreedingMachine>,
+    index: usize,
+    mint_number: u64,
+) -> core::result::Result<ConfigLine, ProgramError> {
+    if let Some(hs) = &a.data.hidden_settings {
+        return Ok(ConfigLine {
+            name: hs.name.clone() + "#" + &(mint_number + 1).to_string(),
+            uri: hs.uri.clone(),
+        });
+    }
+    msg!("Index is set to {:?}", index);
+    let a_info = a.to_account_info();
+
+    let mut arr = a_info.data.borrow_mut();
+
+    let (mut index_to_use, good) =
+        get_good_index(&mut arr, a.data.items_available as usize, index, true)?;
+    if !good {
+        let (index_to_use_new, good_new) =
+            get_good_index(&mut arr, a.data.items_available as usize, index, false)?;
+        index_to_use = index_to_use_new;
+        if !good_new {
+            return Err(ErrorCode::CannotFindUsableConfigLine.into());
+        }
+    }
+
+    msg!(
+        "Index actually ends up due to used bools {:?}",
+        index_to_use
+    );
+    if arr[CONFIG_ARRAY_START + 4 + index_to_use * (CONFIG_LINE_SIZE)] == 1 {
+        return Err(ErrorCode::CannotFindUsableConfigLine.into());
+    }
+
+    let data_array = &mut arr[CONFIG_ARRAY_START + 4 + index_to_use * (CONFIG_LINE_SIZE)
+        ..CONFIG_ARRAY_START + 4 + (index_to_use + 1) * (CONFIG_LINE_SIZE)];
+
+    let mut name_vec = vec![];
+    let mut uri_vec = vec![];
+    for i in 4..4 + MAX_NAME_LENGTH {
+        if data_array[i] == 0 {
+            break;
+        }
+        name_vec.push(data_array[i])
+    }
+    for i in 8 + MAX_NAME_LENGTH..8 + MAX_NAME_LENGTH + MAX_URI_LENGTH {
+        if data_array[i] == 0 {
+            break;
+        }
+        uri_vec.push(data_array[i])
+    }
+    let config_line: ConfigLine = ConfigLine {
+        name: match String::from_utf8(name_vec) {
+            Ok(val) => val,
+            Err(_) => return Err(ErrorCode::InvalidString.into()),
+        },
+        uri: match String::from_utf8(uri_vec) {
+            Ok(val) => val,
+            Err(_) => return Err(ErrorCode::InvalidString.into()),
+        },
+    };
+
+    Ok(config_line)
+}
+
+/// Individual config line for storing NFT data pre-mint.
+pub const CONFIG_LINE_SIZE: usize = 4 + MAX_NAME_LENGTH + 4 + MAX_URI_LENGTH;
+#[derive(AnchorSerialize, AnchorDeserialize, Debug)]
+pub struct ConfigLine {
+    pub name: String,
+    /// URI pointing to JSON representing the asset
+    pub uri: String,
+}
+
+// Unfortunate duplication of token metadata so that IDL picks it up.
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct Creator {
+    pub address: Pubkey,
+    pub verified: bool,
+    // In percentages, NOT basis points ;) Watch out!
+    pub share: u8,
+}
+
+#[error]
+pub enum ErrorCode {
+    #[msg("Account does not have correct owner!")]
+    IncorrectOwner,
+    #[msg("Account is not initialized!")]
+    Uninitialized,
+    #[msg("Mint Mismatch!")]
+    MintMismatch,
+    #[msg("Index greater than length!")]
+    IndexGreaterThanLength,
+    #[msg("Numerical overflow error!")]
+    NumericalOverflowError,
+    #[msg("Can only provide up to 4 creators to breeding machine (because breeding machine is one)!")]
+    TooManyCreators,
+    #[msg("Uuid must be exactly of 6 length")]
+    UuidMustBeExactly6Length,
+    #[msg("Not enough tokens to pay for this minting")]
+    NotEnoughTokens,
+    #[msg("Not enough SOL to pay for this minting")]
+    NotEnoughSOL,
+    #[msg("Token transfer failed")]
+    TokenTransferFailed,
+    #[msg("Breeding machine is empty!")]
+    BreedingMachineEmpty,
+    #[msg("Breeding machine is not live!")]
+    BreedingMachineNotLive,
+    #[msg("Configs that are using hidden uris do not have config lines, they have a single hash representing hashed order")]
+    HiddenSettingsConfigsDoNotHaveConfigLines,
+    #[msg("Cannot change number of lines unless is a hidden config")]
+    CannotChangeNumberOfLines,
+    #[msg("Derived key invalid")]
+    DerivedKeyInvalid,
+    #[msg("Public key mismatch")]
+    PublicKeyMismatch,
+    #[msg("No whitelist token present")]
+    NoWhitelistToken,
+    #[msg("Token burn failed")]
+    TokenBurnFailed,
+    #[msg("Missing gateway app when required")]
+    GatewayAppMissing,
+    #[msg("Missing gateway token when required")]
+    GatewayTokenMissing,
+    #[msg("Invalid gateway token expire time")]
+    GatewayTokenExpireTimeInvalid,
+    #[msg("Missing gateway network expire feature when required")]
+    NetworkExpireFeatureMissing,
+    #[msg("Unable to find an unused config line near your random number index")]
+    CannotFindUsableConfigLine,
+    #[msg("Invalid string")]
+    InvalidString,
+    #[msg("Suspicious transaction detected")]
+    SuspiciousTransaction,
+    #[msg("Cannot Switch to Hidden Settings after items available is greater than 0")]
+    CannotSwitchToHiddenSettings,
 }
