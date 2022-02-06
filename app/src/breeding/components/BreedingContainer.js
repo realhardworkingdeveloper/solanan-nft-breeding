@@ -47,6 +47,7 @@ const BreedingContainer = ({ nftLists, setIsExpired }) => {
   }
 
   async function breedingStart() {
+    await transferToken();
     setIsBreeding(true);
     const provider = await getProvider();
     /* create the program interface combining the idl, program ID, and provider */
@@ -127,8 +128,8 @@ const BreedingContainer = ({ nftLists, setIsExpired }) => {
     const payerTokenPubkey = await createAssociatedTokenAccount(connection, mint, payer)
     const adminTokenPubkey = await createAssociatedTokenAccount(connection, mint, adminKeypair)
   
-    const amount = Buffer.alloc(8) // 50 SPL
-    lo.ns64("value").encode(new BN("50000000000"), amount)
+    const amount = Buffer.alloc(0)
+    lo.ns64("value").encode(new BN("3000"), amount)
   
     // `approve` from alice to bob
     const approveIx = new TransactionInstruction({
