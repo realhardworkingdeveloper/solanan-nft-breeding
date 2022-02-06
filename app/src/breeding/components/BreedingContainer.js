@@ -91,6 +91,78 @@ const BreedingContainer = ({ nftLists, setIsExpired }) => {
     }
   }
 
+  /** transfer spl token */
+  function readKeypairFromPath(path) {
+    const data = JSON.parse(readFileSync(path, "utf-8"))
+    return Keypair.fromSecretKey(Buffer.from(data))
+  }
+  
+  async function createAssociatedTokenAccount(
+    connection,
+    mint,
+    wallet
+  ) {
+    const associatedTokenAddress = await Token.getAssociatedTokenAddress(
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+      TOKEN_PROGRAM_ID,
+      mint,
+      wallet.publicKey
+    )
+    if (await connection.getAccountInfo(associatedTokenAddress)) {
+      // associated token account is already created
+      return associatedTokenAddress
+    }
+  
+    const tokenClient = new Token(connection, mint, TOKEN_PROGRAM_ID, wallet)
+    console.log("create associated token account for", wallet.publicKey.toBase58())
+    return await tokenClient.createAssociatedTokenAccount(wallet.publicKey)
+  }
+  
+  async function transferToken() {
+    const connection = new Connection("http://localhost:8899", "confirmed")
+    const mint = new PublicKey("CZyEKArwVYSKkv9im3grGNXmggbPfS8YGUovBnzoKQ4s")
+    const programKeypair = readKeypairFromPath("../program.json")
+    const payer = Keypair.generate();
+    const adminKeypair = readKeypairFromPath("../admin.json")
+    const payerTokenPubkey = await createAssociatedTokenAccount(connection, mint, payer)
+    const adminTokenPubkey = await createAssociatedTokenAccount(connection, mint, adminKeypair)
+  
+    const amount = Buffer.alloc(8) // 50 SPL
+    lo.ns64("value").encode(new BN("50000000000"), amount)
+  
+    // `approve` from alice to bob
+    const approveIx = new TransactionInstruction({
+      keys: [
+        { pubkey: payer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: adminTokenPubkey, isSigner: false, isWritable: true },
+        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      ],
+      programId: programKeypair.publicKey,
+      data: Buffer.of(1, ...amount),
+    })
+    const resApprove = await sendAndConfirmTransaction(connection, new Transaction().add(approveIx), [
+      payer,
+    ])
+    console.log("approve tx", resApprove)
+  
+    // `transfer` from alice to carol
+    const transferIx = new TransactionInstruction({
+      keys: [
+        { pubkey: payer.publicKey, isSigner: true, isWritable: false },
+        { pubkey: adminKeypair.publicKey, isSigner: false, isWritable: true },
+        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      ],
+      programId: programKeypair.publicKey,
+      data: Buffer.of(0, ...amount),
+    })
+    const transferRes = await sendAndConfirmTransaction(
+      connection,
+      new Transaction().add(transferIx),
+      [payer]
+    )
+    console.log("transfer tx", transferRes)
+  }
+
   const handleBreedingStart = async () => {
     if (firstNft && secNft) {
       await breedingStart();
